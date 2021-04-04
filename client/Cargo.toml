@@ -1,0 +1,9 @@
+[package]
+name = "task-manager-client"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+seed = "0.8.0"
+serde_json = "1.0.64"
+task-manager-types = { path = "../types" }
