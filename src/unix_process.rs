@@ -1,15 +1,17 @@
-use std::{ffi::CString, fs, io, ptr, str::FromStr};
+use std::{fs, io, ptr, str::FromStr};
 
-use libc::{c_char, pid_t};
-use task_manager_types::unix_process::Process;
+use libc::{c_int, id_t, pid_t};
+use task_manager_types::unix_process::{CSpawnArgs, Process};
 
 use helpers::cvt;
 
-fn posix_spawn(program: CString, args: Vec<CString>) -> io::Result<pid_t> {
+pub fn posix_spawn(CSpawnArgs { program, args }: CSpawnArgs) -> io::Result<pid_t> {
     use helpers::cvt_nz;
+    use std::ffi::CString;
     use std::mem::MaybeUninit;
 
-    let argv: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
+    let mut argv: Vec<_> = args.into_iter().map(|s| s.into_raw()).collect();
+    argv.push(ptr::null_mut());
 
     let mut pid = 0;
 
@@ -44,18 +46,18 @@ fn posix_spawn(program: CString, args: Vec<CString>) -> io::Result<pid_t> {
         ))?;
         let file_actions = PosixSpawnFileActions(&mut file_actions);
 
-        extern "C" {
-            static mut environ: *mut *const c_char;
-        }
-        let envp = environ;
+        let envp = [ptr::null_mut()];
         cvt_nz(libc::posix_spawnp(
             &mut pid,
             program.as_ptr(),
             file_actions.0.as_ptr(),
             attrs.0.as_ptr(),
-            argv.as_ptr() as *const _,
-            envp as *const _,
+            argv.as_ptr(),
+            envp.as_ptr(),
         ))?;
+        argv.pop();
+        argv.iter().for_each(|s| drop(CString::from_raw(*s)));
+
         Ok(pid)
     }
 }
@@ -71,22 +73,35 @@ pub fn kill(pid: pid_t) -> io::Result<()> {
     cvt(unsafe { libc::kill(pid, libc::SIGKILL) }).map(drop)
 }
 
-// pub fn set_priority()
+pub fn suspend(pid: pid_t) -> io::Result<()> {
+    cvt(unsafe { libc::kill(pid, libc::SIGSTOP) }).map(drop)
+}
+
+pub fn continue_(pid: pid_t) -> io::Result<()> {
+    cvt(unsafe { libc::kill(pid, libc::SIGCONT) }).map(drop)
+}
+
+pub fn set_priority(pid: pid_t, prio: c_int) -> io::Result<()> {
+    cvt(unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as id_t, prio) }).map(drop)
+}
 
 pub fn list_processes() -> Vec<Process> {
+    let my_pid = unsafe { libc::getpid() };
     fs::read_dir("/proc")
         .expect("unable to find `/proc`")
         .filter_map(|entry| try {
             let entry = entry.ok()?;
             entry.file_type().ok()?.is_dir().then(|| ())?;
             let pid = entry.file_name().to_str()?.parse().ok()?;
-            get_process(pid)?
+            let p = process_from_pid(pid)?;
+            if p.ppid == my_pid && p.state == 'Z' {
+                let mut status: c_int = 0;
+                unsafe { libc::waitpid(p.pid, &mut status, 0) };
+                return None;
+            };
+            p
         })
         .collect()
-}
-
-pub fn get_process(pid: pid_t) -> Option<Process> {
-    process_from_pid(pid)
 }
 
 mod helpers {

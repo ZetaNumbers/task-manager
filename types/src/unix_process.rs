@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     char::ParseCharError,
-    convert::Infallible,
+    convert::{Infallible, TryFrom},
+    ffi::CString,
     num::{ParseFloatError, ParseIntError},
 };
 use thiserror::Error;
@@ -23,12 +24,31 @@ macro_rules! generate_from_str {
                 Ok( $name {
                     $($field : entries
                         .next()
-                        .ok_or(< $err_kind_type >::UnexpectedEnd)
-                        .and_then(|v| v.parse::<scanf_types:: $ty>().map_err(From::from))
+                        .ok_or(<$err_kind_type>::UnexpectedEnd)
+                        .and_then(|v| v.parse::<scanf_types::$ty>().map_err(From::from))
                         .map_err(|kind| $err_type {kind, n: $n})?
                         ,)*
                 })
 
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                $({
+                    <scanf_types::$ty as std::fmt::Display>::fmt(&self.$field, f)?;
+                    ' '.fmt(f)?;
+                })*
+                Ok(())
+            }
+        }
+
+        impl $name {
+            pub const FIELDS: usize = (0 $(+{ stringify!($field); 1 })*);
+            pub const FIELD_NAMES: [&'static str; Self::FIELDS] = [$(stringify!($field),)*];
+
+            pub fn list_field_displays(&self) -> [&dyn std::fmt::Display; Self::FIELDS] {
+                [$(&self.$field,)*]
             }
         }
     };
@@ -121,4 +141,31 @@ pub enum ProcessParseErrorKind {
 pub struct ProcessParseError {
     kind: ProcessParseErrorKind,
     n: u32,
+}
+
+#[derive(Debug)]
+pub struct CSpawnArgs {
+    pub program: CString,
+    pub args: Vec<CString>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SpawnArgs {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+impl TryFrom<SpawnArgs> for CSpawnArgs {
+    type Error = std::ffi::NulError;
+
+    fn try_from(SpawnArgs { program, args }: SpawnArgs) -> Result<Self, Self::Error> {
+        let args = args
+            .into_iter()
+            .map(CString::new)
+            .collect::<Result<_, _>>()?;
+        Ok(CSpawnArgs {
+            program: CString::new(program)?,
+            args,
+        })
+    }
 }
